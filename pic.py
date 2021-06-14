@@ -5,6 +5,7 @@
 import io
 import picamera
 import logging
+import socket
 import socketserver
 from threading import Condition
 from http import server
@@ -135,9 +136,14 @@ with picamera.PiCamera(resolution='640x480', framerate=24) as camera:
     # camera.rotation = 90
     camera.start_recording(output, format='mjpeg')
     try:
-        address = (('http://d4ebd0df84f9.ngrok.io'))
-        server = StreamingServer(address, StreamingHandler)
-        server.serve_forever()
+        target = 'http://d4ebd0df84f9.ngrok.io'
+        port = 80
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.connect(target)
+        s.serve_forever()
+        # address = (())
+        # server = StreamingServer(address, StreamingHandler)
+        # server.serve_forever()
 
     finally:
         camera.stop_recording()
