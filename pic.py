@@ -4,19 +4,35 @@
 
 import io
 import picamera
+import logging
+import socketserver
+from threading import Condition
+from http import server
+
 import datetime
+# import random
 from PIL import Image
 import math, operator
 from functools import reduce
 
 prior_image = None
-before_rate = 0
-last_rate = 0
+
+PAGE = """\
+<html>
+<head>
+<title>Raspberry Pi - Surveillance Camera</title>
+</head>
+<body>
+<center><h1>Raspberry Pi - Surveillance Camera</h1></center>
+<center><img src="stream.mjpg" width="640" height="480"></center>
+</body>
+</html>
+"""
 
 
 # motion notice
 def detect_motion(camera):
-    global prior_image, before_rate, last_rate
+    global prior_image
     stream = io.BytesIO()
     camera.capture(stream, format='jpeg', use_video_port=True)
     stream.seek(0)
@@ -32,40 +48,103 @@ def detect_motion(camera):
         samerate = math.sqrt(reduce(operator.add, map(lambda a, b: (a - b) ** 2, h1, h2)) / len(h1))
         # result = random.randint(0, 10) == 0
         print(samerate)
-        last_rate = samerate
         # Once motion detection is done, make the prior image the current
         prior_image = current_image
-        if samerate < 1000 or abs(last_rate - before_rate) > 1000:
+        if samerate < 1100:
             result = False
-            before_rate = last_rate
         else:
             result = True
-            before_rate = last_rate
 
         return result
 
 
-def write_video(stream):
-    # Write the entire content of the circular buffer to disk. No need to
-    # lock the stream here as we're definitely not writing to it
-    # simultaneously
-    with io.open('/home/pi/CCTV/before.h264', 'wb') as output:
-        for frame in stream.frames:
-            if frame.header:
-                stream.seek(frame.position)
-                break
-        while True:
-            buf = stream.read1()
-            if not buf:
-                break
-            output.write(buf)
-    # Wipe the circular stream once we're done
-    stream.seek(0)
-    stream.truncate()
+class StreamingOutput(object):
+    def __init__(self):
+        self.frame = None
+        self.buffer = io.BytesIO()
+        self.condition = Condition()
+
+    def write(self, buf):
+        if buf.startswith(b'\xff\xd8'):
+            # New frame, copy the existing buffer's content and notify all
+            # clients it's available
+            self.buffer.truncate()
+            with self.condition:
+                self.frame = self.buffer.getvalue()
+                self.condition.notify_all()
+            self.buffer.seek(0)
+        return self.buffer.write(buf)
 
 
+class StreamingHandler(server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/':
+            self.send_response(301)
+            self.send_header('Location', '/index.html')
+            self.end_headers()
+        elif self.path == '/index.html':
+            content = PAGE.encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html')
+            self.send_header('Content-Length', len(content))
+            self.end_headers()
+            self.wfile.write(content)
+        elif self.path == '/stream.mjpg':
+            self.send_response(200)
+            self.send_header('Age', 0)
+            self.send_header('Cache-Control', 'no-cache, private')
+            self.send_header('Pragma', 'no-cache')
+            self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=FRAME')
+            self.end_headers()
+            try:
+                while True:
+                    with output.condition:
+                        output.condition.wait()
+                        frame = output.frame
+                    self.wfile.write(b'--FRAME\r\n')
+                    self.send_header('Content-Type', 'image/jpeg')
+                    self.send_header('Content-Length', len(frame))
+                    self.end_headers()
+
+                    if detect_motion(camera):
+                        print('Motion detected!')
+                        ntime = datetime.datetime.now()
+                        camera.capture('/home/pi/Pictures/' + str(ntime) + '.jpg')
+                        # with io.open('/home/pi/CCTV/' + str(ntime) + '.h264', 'wb') as oput:
+                        #    oput.write(frame)
+
+                    self.wfile.write(frame)
+                    self.wfile.write(b'\r\n')
+            except Exception as e:
+                logging.warning(
+                    'Removed streaming client %s: %s',
+                    self.client_address, str(e))
+        else:
+            self.send_error(404)
+            self.end_headers()
+
+
+class StreamingServer(socketserver.ThreadingMixIn, server.HTTPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+
+with picamera.PiCamera(resolution='640x480', framerate=24) as camera:
+    output = StreamingOutput()
+    # Uncomment the next line to change your Pi's Camera rotation (in degrees)
+    # camera.rotation = 90
+    camera.start_recording(output, format='mjpeg')
+    try:
+        address = ('http://d4ebd0df84f9.ngrok.io')
+        server = StreamingServer(address, StreamingHandler)
+        server.serve_forever()
+
+    finally:
+        camera.stop_recording()
+
+'''        
 with picamera.PiCamera() as camera:
-    camera.resolution = (640, 480)
+    camera.resolution = (1280, 720)
     stream = picamera.PiCameraCircularIO(camera, seconds=10)
     camera.start_recording(stream, format='h264')
     try:
@@ -87,3 +166,4 @@ with picamera.PiCamera() as camera:
                 camera.split_recording(stream)
     finally:
         camera.stop_recording()
+'''
