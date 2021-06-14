@@ -135,7 +135,7 @@ with picamera.PiCamera(resolution='640x480', framerate=24) as camera:
     # camera.rotation = 90
     camera.start_recording(output, format='mjpeg')
     try:
-        address = ('http://d4ebd0df84f9.ngrok.io')
+        address = (('http://d4ebd0df84f9.ngrok.io'))
         server = StreamingServer(address, StreamingHandler)
         server.serve_forever()
 
